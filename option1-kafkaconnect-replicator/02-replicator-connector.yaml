@@ -1,0 +1,47 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: replicator-msk-to-ccloud
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: msk-to-ccloud-connect  # Must match KafkaConnect name
+spec:
+  class: io.confluent.connect.replicator.ReplicatorSourceConnector
+  tasksMax: 10  # Match TARGET partition count for best distribution
+  autoRestart:
+    enabled: true
+  config:
+    # --- Source (MSK) ---
+    src.kafka.bootstrap.servers: "<MSK_BOOTSTRAP_SERVERS>:9096"
+    src.kafka.security.protocol: SASL_SSL
+    src.kafka.sasl.mechanism: SCRAM-SHA-512
+    src.kafka.sasl.jaas.config: >-
+      org.apache.kafka.common.security.scram.ScramLoginModule required
+      username="msk-user" password="msk-password";
+    src.consumer.group.id: replicator-source-group
+
+    # --- Destination (Confluent Cloud) ---
+    dest.kafka.bootstrap.servers: "<CCLOUD_BOOTSTRAP_SERVER>:9092"
+    dest.kafka.security.protocol: SASL_SSL
+    dest.kafka.sasl.mechanism: PLAIN
+    dest.kafka.sasl.jaas.config: >-
+      org.apache.kafka.common.security.plain.PlainLoginModule required
+      username="<CCLOUD_API_KEY>" password="<CCLOUD_API_SECRET>";
+
+    # --- Topic config — CRITICAL for partition reduction (50 → 10) ---
+    topic.whitelist: "my-topic"               # Topics to replicate
+    topic.auto.create: "false"                # Don't auto-create (we pre-created with 10 partitions)
+    topic.config.sync: "false"                # Don't sync topic configs (partition count, etc.)
+    topic.preserve.partitions: "false"        # Don't try to preserve source partitioning
+
+    # --- Partitioner: redistribute across 10 target partitions ---
+    override.producer.partitioner.class: "org.apache.kafka.clients.producer.internals.DefaultPartitioner"
+
+    # --- Converter (byte-for-byte replication) ---
+    key.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+    value.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+    header.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+
+    # --- Offset management ---
+    offset.timestamps.commit: "false"
+    provenance.header.enable: "true"

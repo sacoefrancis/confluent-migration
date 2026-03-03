@@ -1,0 +1,77 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnect
+metadata:
+  name: msk-to-ccloud-connect
+  namespace: kafka
+  annotations:
+    strimzi.io/use-connector-resources: "true"  # Enable KafkaConnector CRDs
+spec:
+  version: 3.7.0
+  replicas: 3
+  bootstrapServers: <MSK_BOOTSTRAP_SERVERS>:9096  # Connect cluster talks to MSK (source)
+
+  # --- Authentication to MSK (for internal Connect topics) ---
+  authentication:
+    type: scram-sha-512
+    username: msk-user
+    passwordSecret:
+      secretName: msk-credentials
+      password: sasl.jaas.config
+  tls:
+    trustedCertificates: []  # MSK uses AWS CA, usually trusted by default
+
+  # --- Build: Install Confluent Replicator plugin ---
+  build:
+    output:
+      type: docker
+      image: <YOUR_REGISTRY>/msk-replicator-connect:latest
+      pushSecret: registry-credentials
+    plugins:
+      - name: confluent-replicator
+        artifacts:
+          - type: tgz
+            url: https://packages.confluent.io/archive/7.6/confluent-7.6.0.tar.gz
+            # Alternative: Use the Hub ZIP for just the replicator connector:
+            # url: https://d1i4a15mxbxib1.cloudfront.net/api/plugins/confluentinc/kafka-connect-replicator/versions/7.6.0/confluentinc-kafka-connect-replicator-7.6.0.zip
+            # type: zip
+
+  # --- Connect worker config ---
+  config:
+    group.id: msk-to-ccloud-replicator
+    config.storage.topic: _connect-configs
+    offset.storage.topic: _connect-offsets
+    status.storage.topic: _connect-status
+    config.storage.replication.factor: 3
+    offset.storage.replication.factor: 3
+    status.storage.replication.factor: 3
+    key.converter: org.apache.kafka.connect.converters.ByteArrayConverter
+    value.converter: org.apache.kafka.connect.converters.ByteArrayConverter
+
+  # --- External config (mount secrets as env vars) ---
+  externalConfiguration:
+    env:
+      - name: CCLOUD_JAAS
+        valueFrom:
+          secretKeyRef:
+            name: confluent-cloud-credentials
+            key: sasl.jaas.config
+
+  # --- Resources ---
+  resources:
+    requests:
+      memory: 2Gi
+      cpu: "1"
+    limits:
+      memory: 4Gi
+      cpu: "2"
+
+  jvmOptions:
+    "-Xmx": "2g"
+    "-Xms": "2g"
+
+  readinessProbe:
+    initialDelaySeconds: 60
+    timeoutSeconds: 10
+  livenessProbe:
+    initialDelaySeconds: 60
+    timeoutSeconds: 10

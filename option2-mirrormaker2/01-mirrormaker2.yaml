@@ -1,0 +1,76 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: msk-to-ccloud
+  namespace: kafka
+spec:
+  version: 3.7.0
+  replicas: 3
+  connectCluster: ccloud  # Target cluster alias
+
+  clusters:
+    # --- Source: AWS MSK ---
+    - alias: msk
+      bootstrapServers: <MSK_BOOTSTRAP_SERVERS>:9096
+      authentication:
+        type: scram-sha-512
+        username: msk-user
+        passwordSecret:
+          secretName: msk-credentials
+          password: sasl.jaas.config
+      tls:
+        trustedCertificates: []
+
+    # --- Target: Confluent Cloud ---
+    - alias: ccloud
+      bootstrapServers: <CCLOUD_BOOTSTRAP_SERVER>:9092
+      authentication:
+        type: plain
+        username: <CCLOUD_API_KEY>
+        passwordSecret:
+          secretName: confluent-cloud-credentials
+          password: sasl.jaas.config
+      tls:
+        trustedCertificates: []
+      config:
+        # Connect worker internal topics live on Confluent Cloud
+        config.storage.replication.factor: 3
+        offset.storage.replication.factor: 3
+        status.storage.replication.factor: 3
+
+  mirrors:
+    - sourceCluster: msk
+      targetCluster: ccloud
+      sourceConnector:
+        tasksMax: 10
+        config:
+          # Replication policy — removes the "msk." prefix from target topic names
+          replication.policy.class: "io.strimzi.kafka.connect.mirror.IdentityReplicationPolicy"
+
+          # Sync settings
+          replication.factor: 3
+          sync.topic.configs.enabled: "false"
+          sync.topic.acls.enabled: "false"
+          refresh.topics.interval.seconds: "30"
+
+          # Producer override for partition redistribution (50 → 10)
+          producer.override.partitioner.class: "org.apache.kafka.clients.producer.internals.DefaultPartitioner"
+
+      # Heartbeat connector
+      heartbeatConnector:
+        config:
+          heartbeats.topic.replication.factor: 3
+
+      # Checkpoint connector — enables consumer offset sync for cutover
+      checkpointConnector:
+        config:
+          checkpoints.topic.replication.factor: 3
+          sync.group.offsets.enabled: "true"
+
+  resources:
+    requests:
+      memory: 2Gi
+      cpu: "1"
+    limits:
+      memory: 4Gi
+      cpu: "2"
