@@ -1,0 +1,113 @@
+# Confluent for Kubernetes (CFK) — Kafka Connect Cluster
+# This deploys a Connect cluster with the Replicator plugin pre-installed
+# The Connect worker uses MSK as the backing Kafka for internal topics
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Connect
+metadata:
+  name: replicator-connect
+  namespace: confluent
+spec:
+  replicas: 3
+
+  # Confluent Platform image with Replicator included
+  image:
+    application: confluentinc/cp-enterprise-replicator:7.6.0
+    init: confluentinc/confluent-init-container:2.8.0
+
+  # --- Internal Kafka (MSK) for Connect offset/config/status topics ---
+  dependencies:
+    kafka:
+      bootstrapEndpoint: "<MSK_BOOTSTRAP_SERVERS>:9096"
+      authentication:
+        type: plain
+        jaasConfig:
+          secretRef: msk-source-credentials
+      tls:
+        enabled: true
+        # Uncomment if MSK uses custom CA:
+        # secretRef: msk-source-tls
+
+  # --- Connect worker configuration ---
+  configOverrides:
+    server:
+      # Group & internal topics
+      - group.id=ccloud-replicator-connect
+      - config.storage.topic=_ccloud-replicator-configs
+      - offset.storage.topic=_ccloud-replicator-offsets
+      - status.storage.topic=_ccloud-replicator-status
+      - config.storage.replication.factor=3
+      - offset.storage.replication.factor=3
+      - status.storage.replication.factor=3
+
+      # Converters
+      - key.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+      - value.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+
+      # Plugin path
+      - plugin.path=/usr/share/java,/usr/share/confluent-hub-components
+
+      # Producer settings for destination (Confluent Cloud)
+      - producer.bootstrap.servers=<CCLOUD_BOOTSTRAP_SERVER>:9092
+      - producer.security.protocol=SASL_SSL
+      - producer.sasl.mechanism=PLAIN
+      - producer.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="<CCLOUD_API_KEY>" password="<CCLOUD_API_SECRET>";
+
+      # Consumer settings for source (MSK)
+      - consumer.bootstrap.servers=<MSK_BOOTSTRAP_SERVERS>:9096
+      - consumer.security.protocol=SASL_SSL
+      - consumer.sasl.mechanism=SCRAM-SHA-512
+      - consumer.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="msk-user" password="msk-password";
+
+  # --- Resources ---
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+
+  # --- Pod template ---
+  podTemplate:
+    # Probes
+    probe:
+      liveness:
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        timeoutSeconds: 10
+      readiness:
+        initialDelaySeconds: 60
+        periodSeconds: 15
+        timeoutSeconds: 10
+
+    # Tolerations (if using dedicated node pools)
+    # tolerations:
+    #   - key: "workload"
+    #     operator: "Equal"
+    #     value: "kafka-connect"
+    #     effect: "NoSchedule"
+
+    # Node affinity (optional — schedule on specific nodes)
+    # affinity:
+    #   nodeAffinity:
+    #     requiredDuringSchedulingIgnoredDuringExecution:
+    #       nodeSelectorTerms:
+    #         - matchExpressions:
+    #             - key: node-role
+    #               operator: In
+    #               values:
+    #                 - kafka-connect
+
+  # --- Metrics (optional — Prometheus JMX exporter) ---
+  metrics:
+    prometheus:
+      blacklist:
+        - "kafka.consumer:type=*,id=*"
+        - "kafka.producer:type=*,id=*"
+      whitelist:
+        - "kafka.connect:type=connect-metrics,*"
+        - "kafka.connect:type=connect-worker-metrics,*"
+        - "kafka.connect:type=connector-metrics,*"
+        - "kafka.connect:type=task-metrics,*"
+        - "kafka.connect:type=source-task-metrics,*"

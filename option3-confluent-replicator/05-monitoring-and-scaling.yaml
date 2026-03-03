@@ -1,0 +1,76 @@
+# Prometheus PodMonitor for Replicator Connect metrics
+# Requires Prometheus Operator installed in your cluster
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: replicator-connect-metrics
+  namespace: confluent
+  labels:
+    app: confluent-replicator
+spec:
+  selector:
+    matchLabels:
+      app: replicator-connect
+  podMetricsEndpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 30s
+  namespaceSelector:
+    matchNames:
+      - confluent
+
+---
+# HorizontalPodAutoscaler for Connect cluster (optional)
+# Scales based on CPU utilization
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: replicator-connect-hpa
+  namespace: confluent
+spec:
+  scaleTargetRef:
+    apiVersion: platform.confluent.io/v1beta1
+    kind: Connect
+    name: replicator-connect
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 600
+
+---
+# PodDisruptionBudget — ensure at least 2 replicas stay running
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: replicator-connect-pdb
+  namespace: confluent
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: replicator-connect

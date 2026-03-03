@@ -1,0 +1,148 @@
+# Confluent Replicator Connector — MSK (Source) → Confluent Cloud (Target)
+#
+# IMPORTANT: Pre-create target topics on Confluent Cloud with 10 partitions
+# BEFORE deploying this connector:
+#
+#   confluent kafka topic create my-topic \
+#     --partitions 10 \
+#     --cluster <CCLOUD_CLUSTER_ID> \
+#     --environment <CCLOUD_ENV_ID>
+#
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Connector
+metadata:
+  name: replicator-msk-to-ccloud
+  namespace: confluent
+  labels:
+    app: confluent-replicator
+spec:
+  # Reference the Connect cluster
+  connectClusterRef:
+    name: replicator-connect
+    namespace: confluent
+
+  # Connector class
+  class: io.confluent.connect.replicator.ReplicatorSourceConnector
+
+  # Number of tasks — match target partition count for optimal throughput
+  taskMax: 10
+
+  # Auto-restart on failure
+  connectRestartPolicy:
+    type: OnFailure
+    maxRestarts: 5
+
+  configs:
+    # =========================================================================
+    # SOURCE CLUSTER (AWS MSK)
+    # =========================================================================
+    src.kafka.bootstrap.servers: "<MSK_BOOTSTRAP_SERVERS>:9096"
+    src.kafka.security.protocol: "SASL_SSL"
+    src.kafka.sasl.mechanism: "SCRAM-SHA-512"
+    src.kafka.sasl.jaas.config: >-
+      org.apache.kafka.common.security.scram.ScramLoginModule required
+      username="msk-user" password="msk-password";
+
+    # Source consumer group
+    src.consumer.group.id: "replicator-msk-source-group"
+    src.consumer.auto.offset.reset: "earliest"
+
+    # =========================================================================
+    # DESTINATION CLUSTER (Confluent Cloud)
+    # =========================================================================
+    dest.kafka.bootstrap.servers: "<CCLOUD_BOOTSTRAP_SERVER>:9092"
+    dest.kafka.security.protocol: "SASL_SSL"
+    dest.kafka.sasl.mechanism: "PLAIN"
+    dest.kafka.sasl.jaas.config: >-
+      org.apache.kafka.common.security.plain.PlainLoginModule required
+      username="<CCLOUD_API_KEY>" password="<CCLOUD_API_SECRET>";
+
+    # =========================================================================
+    # TOPIC CONFIGURATION — CRITICAL FOR PARTITION REDUCTION (50 → 10)
+    # =========================================================================
+
+    # Whitelist of topics to replicate (comma-separated or regex)
+    topic.whitelist: "my-topic"
+    # For regex: topic.regex: "my-topic-.*"
+
+    # CRITICAL: Disable auto topic creation — we pre-created with 10 partitions
+    topic.auto.create: "false"
+
+    # CRITICAL: Don't sync topic configs from source (prevents overwriting partition count)
+    topic.config.sync: "false"
+
+    # CRITICAL: Don't preserve source partition assignment
+    topic.preserve.partitions: "false"
+
+    # =========================================================================
+    # PARTITIONER — Redistributes records across 10 target partitions
+    # =========================================================================
+
+    # Use DefaultPartitioner to hash message keys across 10 target partitions
+    # - Keyed messages: same key always goes to same target partition (ordering preserved per key)
+    # - Unkeyed messages: round-robin across 10 partitions (no ordering guarantee)
+    override.producer.partitioner.class: "org.apache.kafka.clients.producer.internals.DefaultPartitioner"
+
+    # =========================================================================
+    # CONVERTERS — Byte-for-byte replication (no schema transformation)
+    # =========================================================================
+    key.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+    value.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+    header.converter: "org.apache.kafka.connect.converters.ByteArrayConverter"
+
+    # =========================================================================
+    # SCHEMA REGISTRY (optional — uncomment if using Avro/Protobuf/JSON Schema)
+    # =========================================================================
+    # src.key.converter: "io.confluent.connect.avro.AvroConverter"
+    # src.key.converter.schema.registry.url: "<MSK_SCHEMA_REGISTRY_URL>"
+    # src.value.converter: "io.confluent.connect.avro.AvroConverter"
+    # src.value.converter.schema.registry.url: "<MSK_SCHEMA_REGISTRY_URL>"
+    #
+    # dest.key.converter: "io.confluent.connect.avro.AvroConverter"
+    # dest.key.converter.schema.registry.url: "https://<CCLOUD_SR_ENDPOINT>"
+    # dest.key.converter.schema.registry.basic.auth.credentials.source: "USER_INFO"
+    # dest.key.converter.schema.registry.basic.auth.user.info: "<SR_API_KEY>:<SR_API_SECRET>"
+    # dest.value.converter: "io.confluent.connect.avro.AvroConverter"
+    # dest.value.converter.schema.registry.url: "https://<CCLOUD_SR_ENDPOINT>"
+    # dest.value.converter.schema.registry.basic.auth.credentials.source: "USER_INFO"
+    # dest.value.converter.schema.registry.basic.auth.user.info: "<SR_API_KEY>:<SR_API_SECRET>"
+
+    # =========================================================================
+    # OFFSET & TIMESTAMP MANAGEMENT
+    # =========================================================================
+    offset.timestamps.commit: "false"
+
+    # Provenance header — adds source cluster info to message headers
+    provenance.header.enable: "true"
+
+    # =========================================================================
+    # PERFORMANCE TUNING
+    # =========================================================================
+
+    # Producer batching (to Confluent Cloud)
+    override.producer.batch.size: "524288"
+    override.producer.linger.ms: "100"
+    override.producer.buffer.memory: "67108864"
+    override.producer.compression.type: "lz4"
+
+    # Producer reliability
+    override.producer.acks: "all"
+    override.producer.retries: "2147483647"
+    override.producer.delivery.timeout.ms: "300000"
+
+    # Consumer fetch settings (from MSK)
+    override.consumer.fetch.min.bytes: "1"
+    override.consumer.fetch.max.wait.ms: "500"
+    override.consumer.max.poll.records: "5000"
+
+    # =========================================================================
+    # CONFLUENT LICENSE
+    # =========================================================================
+    confluent.topic.replication.factor: "3"
+    confluent.topic.bootstrap.servers: "<CCLOUD_BOOTSTRAP_SERVER>:9092"
+    confluent.topic.security.protocol: "SASL_SSL"
+    confluent.topic.sasl.mechanism: "PLAIN"
+    confluent.topic.sasl.jaas.config: >-
+      org.apache.kafka.common.security.plain.PlainLoginModule required
+      username="<CCLOUD_API_KEY>" password="<CCLOUD_API_SECRET>";
